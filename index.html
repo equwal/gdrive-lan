@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>gdrive</title>
+<style>
+body{font:14px system-ui,sans-serif;margin:16px;max-width:1100px;background:#fff;color:#111}
+@media(prefers-color-scheme:dark){body{background:#181818;color:#eee}input,button{background:#2a2a2a;color:#eee;border-color:#555}td,th{border-color:#333}a{color:#8ab4f8}}
+h1{font-size:18px}form{display:flex;gap:8px;margin:8px 0;flex-wrap:wrap}
+input{flex:1;min-width:200px;padding:6px 8px;border:1px solid #aaa;border-radius:4px}button{padding:6px 8px;border:1px solid #aaa;border-radius:4px}
+table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:6px;text-align:left;vertical-align:top}
+.err{color:#c33}#msg{color:#c33;min-height:1.2em}code{font-size:12px;word-break:break-all}
+</style></head><body>
+<h1>gdrive <small id="q"></small></h1>
+<p>Files go to <code>gcrypt:</code> (rclone crypt over <code>gdrive:crypt</code>). Google stores only encrypted names and contents.
+<a href="/[gcrypt:]/">Browse and download the decrypted drive</a></p>
+<form id="f"><input id="src" list="dirs" placeholder="Folder or file on g, e.g. /mnt/4tb/book-downloads/foo" autocomplete="off">
+<input id="name" placeholder="Name on drive (default: same name)"><button>Upload</button></form>
+<datalist id="dirs"></datalist>
+<div id="msg"></div>
+<table><thead><tr><th>Upload to</th><th>Status</th><th>Done</th><th>Speed</th><th>ETA</th><th></th></tr></thead><tbody id="t"></tbody></table>
+<script>
+const $=id=>document.getElementById(id);
+const fmt=n=>{const u=["B","KB","MB","GB","TB"];let i=0;while(n>=1024&&i<4){n/=1024;i++}return n.toFixed(i?1:0)+" "+u[i]};
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+async function rc(method,params={}){
+  const r=await fetch("/"+method,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(params)});
+  const j=await r.json().catch(()=>({error:"HTTP "+r.status}));if(!r.ok)throw Error(j.error||"HTTP "+r.status);return j}
+const split=p=>{p=p.replace(/\/+$/,"");const i=p.lastIndexOf("/");return [p.slice(0,i)||"/",p.slice(i+1)]};
+// A folder goes through sync/copy (never sync/sync: that deletes on the drive); a single file through operations/copyfile.
+async function upload(src,name){
+  const [dir,base]=split(src);name=name||base;
+  const st=await rc("operations/stat",{fs:dir,remote:base});
+  if(!st.item)throw Error("not found: "+src);
+  // Make the parent first: two jobs that each create it make two folders of that name on Drive.
+  if(name.includes("/"))await rc("operations/mkdir",{fs:"gcrypt:",remote:split(name)[0]});
+  const job={_async:true,_group:"gcrypt:"+name};
+  return st.item.IsDir?rc("sync/copy",{...job,srcFs:dir+"/"+base,dstFs:"gcrypt:"+name,createEmptySrcDirs:true})
+    :rc("operations/copyfile",{...job,srcFs:dir,srcRemote:base,dstFs:"gcrypt:",dstRemote:name})}
+$("f").onsubmit=async e=>{e.preventDefault();
+  try{await upload($("src").value.trim(),$("name").value.trim());$("src").value=$("name").value="";$("msg").textContent="";load()}
+  catch(err){$("msg").textContent=err.message}};
+$("src").oninput=async()=>{const v=$("src").value,dir=v.endsWith("/")?v:split(v)[0];
+  try{const l=await rc("operations/list",{fs:dir,remote:"",opt:{dirsOnly:true}});
+    $("dirs").innerHTML=l.list.map(d=>`<option value="${esc(dir.replace(/\/$/,"")+"/"+d.Path)}">`).join("")}catch{}};
+$("t").onclick=async e=>{const b=e.target.closest("button");if(b&&confirm("Stop upload to "+b.dataset.g+"?")){await rc("job/stopgroup",{group:b.dataset.g});load()}};
+// rclone makes every rc call a job, so uploads are found by their stats group ("gcrypt:NAME", set by _group).
+// A group goes away when its job expires: 1 h after it finishes (--rc-job-expire-duration in /etc/sv/gdrive/run).
+async function load(){
+  try{const a=await rc("operations/about",{fs:"gcrypt:"});$("q").textContent=`— ${fmt(a.used)} used, ${fmt(a.free)} free of ${fmt(a.total)}`}catch{}
+  try{const ids=(await rc("job/list")).runningIds||[];
+    const running=new Set((await Promise.all(ids.map(id=>rc("job/status",{jobid:id}).catch(()=>({}))))).map(j=>j.group));
+    const groups=(await rc("core/group-list")).groups.filter(g=>g.startsWith("gcrypt:")).reverse();
+    const rows=await Promise.all(groups.map(async g=>{const s=await rc("core/stats",{group:g}),run=running.has(g);
+      const st=run?"running":s.errors?"failed: "+esc(s.lastError):"done";
+      return `<tr><td>${esc(g)}</td><td class="${!run&&s.errors?"err":""}">${st}</td>
+        <td>${fmt(s.bytes)}${s.totalBytes?" of "+fmt(s.totalBytes):""}</td><td>${run?fmt(s.speed)+"/s":""}</td>
+        <td>${run&&s.eta!=null?Math.round(s.eta/60)+" min":""}</td><td>${run?`<button data-g="${esc(g)}">Stop</button>`:""}</td></tr>`}));
+    $("t").innerHTML=rows.join("")}
+  catch(err){$("msg").textContent="status failed: "+err.message}}
+load();setInterval(load,5000);
+</script></body></html>

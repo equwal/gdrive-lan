@@ -1,0 +1,6 @@
+# Secrets never belong here: the crypt passwords live only in /etc/keys on g.
+*.env
+*.key
+*passwords*
+rclone.conf
+*.log

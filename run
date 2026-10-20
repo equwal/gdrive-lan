@@ -1,0 +1,10 @@
+#!/bin/sh
+# gdrive.lan: rclone rcd for the encrypted Google Drive remote gcrypt:. Loopback :8103, proxied by nginx-local.
+# The crypt passwords live only in /etc/keys/gcrypt.env (root 0400, on the LUKS root), not in jose's rclone.conf.
+exec 2>&1
+set -a
+. /etc/keys/gcrypt.env || exit 1
+set +a
+exec chpst -u jose:jose env HOME=/home/jose /home/jose/.local/state/nix/profiles/extra/bin/rclone rcd \
+  --rc-addr 127.0.0.1:8103 --rc-no-auth --rc-serve --rc-files /home/jose/gdriveweb \
+  --rc-job-expire-duration 1h
